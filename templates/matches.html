@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Matches — Cadenza</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <header>
+        <h1>🎵 Cadenza</h1>
+        <nav>
+            <a href="{{ url_for('profile') }}">My Profile</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <h2>Your Matches</h2>
+
+        {% if matches %}
+        <div class="matches-grid">
+            {% for match in matches %}
+            <div class="match-card">
+                {% if match.avatar_url %}
+                <img src="{{ match.avatar_url }}" alt="{{ match.display_name }}" class="avatar">
+                {% else %}
+                <div class="avatar avatar-placeholder">🎧</div>
+                {% endif %}
+
+                <h3>{{ match.display_name }}</h3>
+                <p class="top-artist">Top artist: {{ match.top_artist }}</p>
+
+                <div class="similarity-bar-wrap">
+                    <div class="similarity-bar" style="width: {{ match.similarity }}%"></div>
+                </div>
+                <p class="similarity-label">{{ match.similarity }}% match</p>
+
+                <a href="{{ url_for('chat', room_id=match.room_id) }}" class="btn btn-sm">Chat →</a>
+            </div>
+            {% endfor %}
+        </div>
+
+        {% else %}
+        <div class="empty-state">
+            <p>No matches yet — you might be the first one here! Share the app with friends so you can match.</p>
+        </div>
+        {% endif %}
+    </main>
+</body>
+</html>

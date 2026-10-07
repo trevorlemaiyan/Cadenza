@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat with {{ other_name }} — Cadenza</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+</head>
+<body>
+    <header>
+        <h1>🎵 Cadenza</h1>
+        <nav>
+            <a href="{{ url_for('get_matches') }}">← Back to Matches</a>
+        </nav>
+    </header>
+
+    <main class="container chat-container">
+        <h2>Chat with {{ other_name }}</h2>
+
+        <div id="chat" role="log" aria-live="polite"></div>
+
+        <form id="chat-form">
+            <input type="text" id="message" placeholder="Type a message…" autocomplete="off" required />
+            <button type="submit">Send</button>
+        </form>
+    </main>
+
+    <script>
+        // Pass server-rendered values to JS
+        const ROOM_ID = {{ room_id | tojson }};
+        const MY_NAME = {{ other_name | tojson }};  // sender label for this session
+    </script>
+    <script src="{{ url_for('static', filename='app.js') }}"></script>
+</body>
+</html>

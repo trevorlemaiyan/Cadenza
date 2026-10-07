@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Your Profile — Cadenza</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <header>
+        <h1>🎵 Cadenza</h1>
+        <nav>
+            <a href="{{ url_for('get_matches') }}">Find Matches</a>
+        </nav>
+    </header>
+
+    <main class="container profile-container">
+        <div class="profile-header">
+            {% if avatar_url %}
+            <img src="{{ avatar_url }}" alt="Profile photo" class="avatar">
+            {% else %}
+            <div class="avatar avatar-placeholder">🎧</div>
+            {% endif %}
+            <h2>{{ display_name }}</h2>
+        </div>
+
+        <div class="two-col">
+            <section>
+                <h3>Top Tracks</h3>
+                <ol class="music-list">
+                    {% for item in top_tracks.items %}
+                    <li>
+                        <span class="track-name">{{ item.name }}</span>
+                        <span class="artist-name">{{ item.artists[0].name }}</span>
+                    </li>
+                    {% else %}
+                    <li>No tracks found.</li>
+                    {% endfor %}
+                </ol>
+            </section>
+
+            <section>
+                <h3>Top Artists</h3>
+                <ol class="music-list">
+                    {% for item in top_artists.items %}
+                    <li>
+                        {% if item.images %}<img src="{{ item.images[-1].url }}" alt="{{ item.name }}" class="artist-thumb">{% endif %}
+                        {{ item.name }}
+                    </li>
+                    {% else %}
+                    <li>No artists found.</li>
+                    {% endfor %}
+                </ol>
+            </section>
+        </div>
+
+        <div class="cta-row">
+            <a href="{{ url_for('get_matches') }}" class="btn">Find My Matches →</a>
+        </div>
+    </main>
+</body>
+</html>

@@ -1,0 +1,5 @@
+SPOTIFY_CLIENT_ID=a27d946fae004bca9e4e26805c696d76
+SPOTIFY_CLIENT_SECRET=133f8264ab234e97b24f907702197e34
+REDIRECT_URI=http://localhost:5000/callback
+SECRET_KEY=kivC1/=2l+6N#.2/`oFQ
+MONGO_URI=mongodb+srv://user1:<trec7456>@cadenza.fgf22yh.mongodb.net/
