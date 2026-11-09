@@ -1,0 +1,98 @@
+# =============================================================================
+# Cadenza — docker-compose.yml
+# =============================================================================
+#
+# Quick start
+# -----------
+#   cp .env.example .env          # fill in Spotify keys (optional)
+#   docker compose up --build     # first run builds image + seeds DB
+#   docker compose up             # subsequent runs (no rebuild)
+#   docker compose down -v        # stop and wipe volumes
+#
+# Services
+# --------
+#   web    Flask app via Gunicorn (port 5000)
+#   db     PostgreSQL 16-alpine   (port 5432, persisted in 'pgdata' volume)
+#   redis  Redis 7-alpine         (port 6379, persisted in 'redisdata' volume)
+#
+# Health checks
+# -------------
+#   db     pg_isready every 10 s, 5 s timeout, 5 retries
+#   redis  redis-cli ping every 10 s, 5 s timeout, 5 retries
+#   web    GET /health every 30 s (checks both Postgres + Redis)
+# =============================================================================
+
+services:
+
+  # ── PostgreSQL 16 ──────────────────────────────────────────────────────────
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB:       cadenza
+      POSTGRES_USER:     cadenza
+      POSTGRES_PASSWORD: cadenza
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"           # expose for local psql / pgAdmin access
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cadenza -d cadenza"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis 7 ────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: redis-server --save 60 1 --loglevel warning
+    volumes:
+      - redisdata:/data
+    ports:
+      - "6379:6379"           # expose for local redis-cli access
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 5s
+
+  # ── Flask / Gunicorn ───────────────────────────────────────────────────────
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: runtime
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://cadenza:cadenza@db:5432/cadenza
+      REDIS_URL:    redis://redis:6379/0
+      PORT:         "5000"
+      GUNICORN_WORKERS: "2"
+      GUNICORN_THREADS: "2"
+      GUNICORN_TIMEOUT: "120"
+      SPOTIFY_CLIENT_ID: ${SPOTIFY_CLIENT_ID:-}
+      SPOTIFY_CLIENT_SECRET: ${SPOTIFY_CLIENT_SECRET:-}
+      REDIRECT_URI: ${REDIRECT_URI:-http://localhost:5000/callback}
+      SECRET_KEY: ${SECRET_KEY:-cadenza-dev-secret-key-change-in-production}
+    ports:
+      - "5000:5000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  pgdata:
+    driver: local
+  redisdata:
+    driver: local

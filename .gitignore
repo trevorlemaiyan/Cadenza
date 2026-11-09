@@ -29,3 +29,19 @@ Thumbs.db
 
 # Vercel
 .vercel/
+
+# Docker local state (volumes, overrides)
+docker-compose.override.yml
+
+# SQLite dev databases
+*.db
+*.sqlite3
+instance/
+
+# pytest
+.pytest_cache/
+pytest.ini
+
+# Coverage
+.coverage
+htmlcov/

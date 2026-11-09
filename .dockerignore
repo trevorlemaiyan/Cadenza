@@ -1,0 +1,58 @@
+# =============================================================================
+# .dockerignore — files excluded from the Docker build context
+# =============================================================================
+# A tight ignore list keeps the build context small (faster docker build)
+# and prevents secrets / local state from leaking into the image.
+
+# Secrets — NEVER bake .env into the image
+.env
+*.env
+
+# Local Python state
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# SQLite dev databases (PostgreSQL is used in containers)
+*.db
+*.sqlite3
+instance/
+
+# Tests (not needed in the production image)
+tests/
+pytest.ini
+.pytest_cache/
+
+# CI / local tooling
+.github/
+.vscode/
+.idea/
+*.iml
+
+# Version control metadata
+.git/
+.gitignore
+
+# Vercel / deployment artefacts
+.vercel/
+vercel.json
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Docker files themselves (already in the build context, not needed inside)
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+README.md
+*.md
