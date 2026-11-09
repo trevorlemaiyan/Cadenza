@@ -300,6 +300,7 @@ def recommendations():
 # Routes — JSON API
 # ---------------------------------------------------------------------------
 
+@app.route("/api/recommend")
 @app.route("/api/recommendations")
 def api_recommendations():
     """

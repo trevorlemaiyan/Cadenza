@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: Test & Validate
+    runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: cadenza_test
+          POSTGRES_USER: cadenza
+          POSTGRES_PASSWORD: cadenza_password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Bootstrap and seed database
+        env:
+          DATABASE_URL: postgresql://cadenza:cadenza_password@localhost:5432/cadenza_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-ci-secret-key-12345
+        run: |
+          python seed.py
+
+      - name: Run test suite with Pytest
+        env:
+          DATABASE_URL: postgresql://cadenza:cadenza_password@localhost:5432/cadenza_test
+          REDIS_URL: redis://localhost:6379/0
+          SECRET_KEY: test-ci-secret-key-12345
+        run: |
+          python -m pytest tests/ -v
