@@ -7,10 +7,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const form = document.getElementById('chat-form');
     const input = document.getElementById('message');
 
+    // Scroll to bottom of history
+    chatDiv.scrollTop = chatDiv.scrollHeight;
+
     // Join the private room for this match pair
     socket.emit('join', { room: ROOM_ID });
 
     socket.on('message', (data) => {
+        // Avoid duplicating the optimistic bubble we already appended
+        if (data._echo) return;
         appendMessage(data.sender, data.msg, false);
     });
 
@@ -19,10 +24,15 @@ document.addEventListener('DOMContentLoaded', () => {
         const msg = input.value.trim();
         if (!msg) return;
 
-        // Show own message immediately
+        // Optimistically show own message immediately
         appendMessage('You', msg, true);
 
-        socket.emit('message', { room: ROOM_ID, msg: msg, sender: MY_NAME });
+        socket.emit('message', {
+            room: ROOM_ID,
+            msg: msg,
+            sender: MY_NAME,
+            sender_id: MY_ID,
+        });
         input.value = '';
     });
 

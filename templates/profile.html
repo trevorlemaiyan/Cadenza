@@ -10,7 +10,8 @@
     <header>
         <h1>🎵 Cadenza</h1>
         <nav>
-            <a href="{{ url_for('get_matches') }}">Find Matches</a>
+            <a href="{{ url_for('get_matches') }}">Matches</a>
+            <a href="{{ url_for('recommendations') }}">Recommendations</a>
         </nav>
     </header>
 
@@ -56,6 +57,7 @@
 
         <div class="cta-row">
             <a href="{{ url_for('get_matches') }}" class="btn">Find My Matches →</a>
+            <a href="{{ url_for('recommendations') }}" class="btn" style="background:#282828;color:#1db954;">Get Recommendations →</a>
         </div>
     </main>
 </body>

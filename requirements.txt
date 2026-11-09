@@ -2,7 +2,22 @@ Flask>=3.0.0
 Werkzeug>=3.0.0
 requests>=2.31.0
 python-dotenv>=1.0.0
-pymongo>=4.6.0
 flask-socketio>=5.3.6
 gunicorn>=21.2.0
 eventlet>=0.35.0
+
+# PostgreSQL — primary database
+Flask-SQLAlchemy>=3.1.0
+psycopg2-binary>=2.9.0
+SQLAlchemy>=2.0.0
+
+# Caching (Redis in prod, in-process fallback for dev)
+Flask-Caching>=2.1.0
+redis>=5.0.0
+
+# Recommendation engine
+scikit-learn>=1.4.0
+numpy>=1.26.0
+
+# Legacy / optional
+pymongo>=4.6.0

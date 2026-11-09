@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Recommendations — Cadenza</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <header>
+        <h1>🎵 Cadenza</h1>
+        <nav>
+            <a href="{{ url_for('profile') }}">My Profile</a>
+            <a href="{{ url_for('get_matches') }}">Matches</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <h2>Your Recommendations</h2>
+        <p class="subtitle">Powered by cosine-similarity across our curated track library</p>
+
+        <!-- Feature vector visualiser -->
+        <section class="vector-panel">
+            <h3>Your Preference Vector</h3>
+            <div class="vector-bars">
+                {% set labels = ["Tempo", "Energy", "Danceability", "Valence", "Acousticness", "Instrumentalness"] %}
+                {% for i in range(6) %}
+                <div class="vec-row">
+                    <span class="vec-label">{{ labels[i] }}</span>
+                    <div class="similarity-bar-wrap">
+                        <div class="similarity-bar" style="width: {{ (seed_vector[i] * 100) | round | int }}%"></div>
+                    </div>
+                    <span class="vec-value">{{ (seed_vector[i] * 100) | round | int }}%</span>
+                </div>
+                {% endfor %}
+            </div>
+        </section>
+
+        <!-- Recommendation cards -->
+        {% if recommendations %}
+        <div class="matches-grid recs-grid">
+            {% for rec in recommendations %}
+            <div class="match-card rec-card">
+                {% if rec.album_art_url %}
+                <img src="{{ rec.album_art_url }}" alt="{{ rec.name }}" class="album-art">
+                {% else %}
+                <div class="album-art album-art-placeholder">🎵</div>
+                {% endif %}
+
+                <div class="rec-info">
+                    <h3 class="rec-title">{{ rec.name }}</h3>
+                    <p class="top-artist">{{ rec.artist }}</p>
+                    <span class="genre-badge">{{ rec.genre }}</span>
+                </div>
+
+                <div class="similarity-bar-wrap">
+                    <div class="similarity-bar" style="width: {{ rec.similarity_pct }}%"></div>
+                </div>
+                <p class="similarity-label">{{ rec.similarity_pct }}% match</p>
+
+                {% if not rec.spotify_id.startswith('SEED_') %}
+                <a href="https://open.spotify.com/track/{{ rec.spotify_id }}"
+                   target="_blank" rel="noopener" class="btn btn-sm btn-spotify">
+                   Open in Spotify ↗
+                </a>
+                {% endif %}
+            </div>
+            {% endfor %}
+        </div>
+
+        {% else %}
+        <div class="empty-state">
+            <p>No recommendations yet — run <code>python seed.py</code> to populate the track library.</p>
+        </div>
+        {% endif %}
+    </main>
+</body>
+</html>

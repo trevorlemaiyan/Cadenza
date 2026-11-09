@@ -12,13 +12,22 @@
         <h1>🎵 Cadenza</h1>
         <nav>
             <a href="{{ url_for('get_matches') }}">← Back to Matches</a>
+            <a href="{{ url_for('recommendations') }}">Recommendations</a>
         </nav>
     </header>
 
     <main class="container chat-container">
         <h2>Chat with {{ other_name }}</h2>
 
-        <div id="chat" role="log" aria-live="polite"></div>
+        <div id="chat" role="log" aria-live="polite">
+            <!-- Load persisted message history -->
+            {% for msg in history %}
+            <div class="message {% if msg.sender_spotify_id == my_spotify_id %}message-self{% else %}message-other{% endif %}">
+                <span class="message-sender">{{ msg.sender_name }}</span>
+                <div class="bubble">{{ msg.body }}</div>
+            </div>
+            {% endfor %}
+        </div>
 
         <form id="chat-form">
             <input type="text" id="message" placeholder="Type a message…" autocomplete="off" required />
@@ -27,9 +36,9 @@
     </main>
 
     <script>
-        // Pass server-rendered values to JS
-        const ROOM_ID = {{ room_id | tojson }};
-        const MY_NAME = {{ other_name | tojson }};  // sender label for this session
+        const ROOM_ID   = {{ room_id | tojson }};
+        const MY_NAME   = {{ session.get('display_name', 'You') | tojson }};
+        const MY_ID     = {{ my_spotify_id | tojson }};
     </script>
     <script src="{{ url_for('static', filename='app.js') }}"></script>
 </body>

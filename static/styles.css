@@ -251,3 +251,147 @@ body.landing {
     .matches-grid { grid-template-columns: 1fr 1fr; }
     .message { max-width: 90%; }
 }
+
+
+/* ============================================================
+   Recommendations — Hybrid Engine UI
+   ============================================================ */
+
+/* Subtitle */
+.subtitle {
+    color: #b3b3b3;
+    font-size: 0.95rem;
+    margin-bottom: 1.8rem;
+}
+
+/* Preference vector panel */
+.vector-panel {
+    background: #181818;
+    border: 1px solid #282828;
+    border-radius: 10px;
+    padding: 1.4rem 1.6rem;
+    margin-bottom: 2rem;
+}
+
+.vector-panel h3 {
+    font-size: 1rem;
+    color: #1db954;
+    margin-bottom: 1rem;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+}
+
+.vector-bars { display: flex; flex-direction: column; gap: 0.6rem; }
+
+.vec-row {
+    display: grid;
+    grid-template-columns: 7rem 1fr 3rem;
+    align-items: center;
+    gap: 0.8rem;
+}
+
+.vec-label {
+    font-size: 0.82rem;
+    color: #b3b3b3;
+    text-align: right;
+}
+
+.vec-value {
+    font-size: 0.82rem;
+    color: #e0e0e0;
+    text-align: left;
+}
+
+/* Recs grid — wider cards */
+.recs-grid {
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+}
+
+.rec-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+/* Album art */
+.album-art {
+    width: 100%;
+    aspect-ratio: 1;
+    object-fit: cover;
+    border-radius: 8px;
+}
+
+.album-art-placeholder {
+    width: 100%;
+    aspect-ratio: 1;
+    background: #282828;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3rem;
+    border-radius: 8px;
+    color: #535353;
+}
+
+.rec-info { display: flex; flex-direction: column; gap: 0.2rem; }
+
+.rec-title {
+    font-size: 0.95rem;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* Genre badge */
+.genre-badge {
+    display: inline-block;
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    border-radius: 999px;
+    background: #282828;
+    color: #1db954;
+    border: 1px solid #1db954;
+    width: fit-content;
+    margin-top: 0.1rem;
+}
+
+/* Spotify open button */
+.btn-spotify {
+    background: #1db954;
+    color: #000;
+    border: none;
+    font-weight: 600;
+    text-align: center;
+    margin-top: 0.3rem;
+}
+
+.btn-spotify:hover {
+    background: #17a349;
+    text-decoration: none;
+}
+
+/* JSON/API endpoint code style */
+code {
+    background: #282828;
+    color: #1db954;
+    padding: 0.1em 0.4em;
+    border-radius: 4px;
+    font-size: 0.88em;
+}
+
+/* header nav — multiple links */
+header nav {
+    display: flex;
+    gap: 1.2rem;
+    align-items: center;
+}
+
+/* Landing sub-line */
+.landing-sub {
+    font-size: 0.85rem;
+    color: #535353;
+    margin-bottom: 1.2rem;
+}
