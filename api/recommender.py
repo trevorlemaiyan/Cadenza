@@ -1,6 +1,6 @@
 """
-recommender.py — Hybrid Music Recommendation Engine
-=====================================================
+api/recommender.py — Hybrid Music Recommendation Engine
+========================================================
 Algorithm
 ---------
 1. Build a 6-D feature vector for each track in the PostgreSQL Track table.
@@ -13,6 +13,12 @@ Algorithm
      • The Spotify API rate-limits us (HTTP 429).
      • Any network error occurs.
 
+Caching (all via api/cache.py → Redis)
+---------------------------------------
+  cadenza:cc_token                     Spotify CC token      (TTL ≈ 59 min)
+  cadenza:spotify:track:<spotify_id>   /v1/tracks metadata   (TTL = 24 h)
+  cadenza:recs:<vec_hash>:<n>          Recommendation list   (TTL = 1 h)
+
 Feature vector dimensions (all in [0, 1])
 ------------------------------------------
   [0] tempo / 250        (raw BPM normalised)
@@ -22,23 +28,24 @@ Feature vector dimensions (all in [0, 1])
   [4] acousticness
   [5] instrumentalness
 
-Redis cache
------------
-Spotify Client-Credentials tokens are cached in Redis (key: ``cc_token``)
-for the token's declared ``expires_in`` TTL so we don't re-fetch on every
-recommendation request.  Recommendation results are also cached per seed
-vector for 5 minutes.
+Return value of get_recommendations
+------------------------------------
+    results, cache_hit = get_recommendations(seed_vector, n)
+
+``cache_hit`` is True when the full result set was served from Redis without
+touching PostgreSQL or Spotify — used by the HTTP layer to set X-Cache headers.
 
 Usage
 -----
-    from api.recommender import get_recommendations
+    from api.recommender import get_recommendations, vector_from_top_tracks
 
-    recs = get_recommendations(
+    results, cache_hit = get_recommendations(
         seed_vector=[0.5, 0.8, 0.7, 0.6, 0.1, 0.0],
         n=10,
     )
-    # → list of dicts with keys: spotify_id, name, artist, genre,
-    #   album_art_url, similarity_pct
+    # results → list[dict] with keys:
+    #   spotify_id, name, artist, genre, album_art_url, similarity_pct
+    # cache_hit → bool
 """
 
 from __future__ import annotations
@@ -52,62 +59,48 @@ from typing import Optional
 
 import numpy as np
 import requests
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_similarity as sk_cosine_sim
+
+# ---------------------------------------------------------------------------
+# Cache singleton (graceful no-op when Redis is absent)
+# ---------------------------------------------------------------------------
+from api.cache import cache
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Redis client (optional — degrades gracefully if Redis is unavailable)
+# In-process fallback for Spotify CC token (used when Redis is absent)
 # ---------------------------------------------------------------------------
-_redis_client = None
-
-def _get_redis():
-    global _redis_client
-    if _redis_client is not None:
-        return _redis_client
-    redis_url = os.getenv("REDIS_URL")
-    if not redis_url:
-        return None
-    try:
-        import redis
-        _redis_client = redis.from_url(redis_url, decode_responses=True)
-        _redis_client.ping()
-        logger.info("Redis connected.")
-        return _redis_client
-    except Exception as exc:
-        logger.warning("Redis unavailable — caching disabled. %s", exc)
-        return None
+_cc_token_cache: dict = {}
 
 
 # ---------------------------------------------------------------------------
-# Spotify Client-Credentials token (no user login needed for /v1/tracks)
+# Spotify Client-Credentials token
 # ---------------------------------------------------------------------------
-
-_cc_token_cache: dict = {}   # in-process fallback if Redis is absent
-
 
 def _get_cc_token() -> Optional[str]:
     """
-    Return a valid Spotify Client-Credentials access token, refreshing when
-    expired.  Tries Redis first, then falls back to an in-process dict.
+    Return a valid Spotify Client-Credentials access token.
+    Order of precedence:
+      1. Redis cache  (cadenza:cc_token)
+      2. In-process dict fallback
+      3. Fresh fetch from accounts.spotify.com
     """
     client_id = os.getenv("SPOTIFY_CLIENT_ID")
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
     if not client_id or not client_secret:
         return None
 
-    r = _get_redis()
-    cache_key = "cadenza:cc_token"
+    # 1 — Redis
+    cached = cache.get_cc_token()
+    if cached:
+        return cached
 
-    # --- try cache ---
-    if r:
-        cached = r.get(cache_key)
-        if cached:
-            return cached
-    elif _cc_token_cache.get("token") and _cc_token_cache.get("exp", 0) > time.time():
+    # 2 — in-process dict (used when Redis is absent)
+    if _cc_token_cache.get("token") and _cc_token_cache.get("exp", 0) > time.time():
         return _cc_token_cache["token"]
 
-    # --- fetch fresh ---
+    # 3 — fetch fresh
     try:
         resp = requests.post(
             "https://accounts.spotify.com/api/token",
@@ -120,33 +113,101 @@ def _get_cc_token() -> Optional[str]:
         token = data["access_token"]
         ttl = int(data.get("expires_in", 3600)) - 60   # 1-min safety buffer
 
-        if r:
-            r.set(cache_key, token, ex=ttl)
-        else:
-            _cc_token_cache["token"] = token
-            _cc_token_cache["exp"] = time.time() + ttl
+        cache.set_cc_token(token, ttl)
 
+        # Always keep in-process copy so we survive a Redis restart mid-session
+        _cc_token_cache["token"] = token
+        _cc_token_cache["exp"] = time.time() + ttl
+
+        logger.info("Spotify CC token refreshed (ttl=%ds).", ttl)
         return token
+
     except Exception as exc:
         logger.warning("Could not fetch Spotify CC token: %s", exc)
         return None
 
 
 # ---------------------------------------------------------------------------
-# Spotify metadata enrichment
+# Spotify /v1/tracks metadata enrichment (24-hour per-track cache)
 # ---------------------------------------------------------------------------
+
+def _fetch_spotify_track(spotify_id: str, token: str) -> Optional[dict]:
+    """
+    Return cached or freshly-fetched metadata for a single Spotify track ID.
+    Cached for TTL_SPOTIFY_TRACK (24 h) in Redis.
+    Returns None on rate-limit or any error.
+    """
+    # Cache hit
+    cached = cache.get_spotify_track(spotify_id)
+    if cached:
+        return cached
+
+    # Cache miss — go to Spotify
+    try:
+        resp = requests.get(
+            f"https://api.spotify.com/v1/tracks/{spotify_id}",
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=5,
+        )
+        if resp.status_code == 429:
+            retry_after = resp.headers.get("Retry-After", "unknown")
+            logger.warning(
+                "Spotify rate-limited on /v1/tracks/%s (Retry-After: %s).",
+                spotify_id,
+                retry_after,
+            )
+            return None
+        if resp.status_code == 404:
+            logger.debug("Spotify track %s not found.", spotify_id)
+            return None
+        resp.raise_for_status()
+
+        track = resp.json()
+        images = track.get("album", {}).get("images", [])
+        meta = {
+            "name": track.get("name"),
+            "artist": (track.get("artists") or [{}])[0].get("name"),
+            "album_art_url": images[0]["url"] if images else None,
+        }
+        cache.set_spotify_track(spotify_id, meta)
+        return meta
+
+    except Exception as exc:
+        logger.warning("Spotify /v1/tracks/%s error: %s", spotify_id, exc)
+        return None
+
 
 def _enrich_from_spotify(spotify_ids: list[str], token: str) -> dict[str, dict]:
     """
-    Call /v1/tracks?ids=... for up to 50 IDs at a time.
-    Returns a dict keyed by Spotify track ID with keys: name, artist, album_art_url.
+    Enrich a list of Spotify IDs with metadata.
+
+    Strategy: check each ID in the Redis cache first (O(N) pipeline pings but
+    no network round-trip to Spotify).  Batch-fetch uncached IDs using the
+    /v1/tracks?ids= bulk endpoint (up to 50 per call) and write each result
+    back to cache individually.
+
+    Returns a dict keyed by Spotify ID.
     """
     enriched: dict[str, dict] = {}
-    chunk_size = 50
-    headers = {"Authorization": f"Bearer {token}"}
+    uncached: list[str] = []
 
-    for i in range(0, len(spotify_ids), chunk_size):
-        chunk = spotify_ids[i : i + chunk_size]
+    # --- Check per-track cache ---
+    for sid in spotify_ids:
+        cached = cache.get_spotify_track(sid)
+        if cached:
+            enriched[sid] = cached
+        else:
+            uncached.append(sid)
+
+    if not uncached or not token:
+        return enriched
+
+    # --- Batch-fetch uncached from Spotify ---
+    headers = {"Authorization": f"Bearer {token}"}
+    chunk_size = 50
+
+    for i in range(0, len(uncached), chunk_size):
+        chunk = uncached[i : i + chunk_size]
         try:
             resp = requests.get(
                 "https://api.spotify.com/v1/tracks",
@@ -155,35 +216,45 @@ def _enrich_from_spotify(spotify_ids: list[str], token: str) -> dict[str, dict]:
                 timeout=5,
             )
             if resp.status_code == 429:
-                logger.warning("Spotify rate-limited — using DB fallback for this chunk.")
-                continue
+                retry_after = resp.headers.get("Retry-After", "unknown")
+                logger.warning(
+                    "Spotify rate-limited on batch /v1/tracks (Retry-After: %s)."
+                    " Remaining %d IDs will use DB fallback.",
+                    retry_after,
+                    len(spotify_ids) - len(enriched),
+                )
+                break   # leave remaining tracks to DB fallback
             resp.raise_for_status()
+
             for track in resp.json().get("tracks") or []:
                 if not track:
                     continue
                 images = track.get("album", {}).get("images", [])
-                enriched[track["id"]] = {
+                meta = {
                     "name": track.get("name"),
-                    "artist": track.get("artists", [{}])[0].get("name"),
+                    "artist": (track.get("artists") or [{}])[0].get("name"),
                     "album_art_url": images[0]["url"] if images else None,
                 }
+                enriched[track["id"]] = meta
+                # Cache each individual track for 24 h
+                cache.set_spotify_track(track["id"], meta)
+
         except Exception as exc:
-            logger.warning("Spotify /v1/tracks error: %s", exc)
+            logger.warning("Spotify batch /v1/tracks error: %s", exc)
 
     return enriched
 
 
 # ---------------------------------------------------------------------------
-# Core recommendation logic
+# Corpus — load Track rows from PostgreSQL
 # ---------------------------------------------------------------------------
 
 def _build_corpus() -> tuple[list, np.ndarray]:
     """
-    Load all Track rows from PostgreSQL and return
-    (track_objects, feature_matrix) where feature_matrix is shape (N, 6).
+    Load all Track rows and return (track_objects, feature_matrix).
+    feature_matrix has shape (N, 6).
     """
-    # Import here to avoid circular import at module load time
-    from api.models import Track
+    from api.models import Track   # local import avoids circular dependency
 
     tracks = Track.query.all()
     if not tracks:
@@ -193,13 +264,21 @@ def _build_corpus() -> tuple[list, np.ndarray]:
     return tracks, matrix
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def get_recommendations(
     seed_vector: list[float],
     n: int = 10,
     exclude_spotify_ids: Optional[list[str]] = None,
-) -> list[dict]:
+) -> tuple[list[dict], bool]:
     """
-    Return the top-*n* tracks closest to *seed_vector* by cosine similarity.
+    Return ``(results, cache_hit)`` where:
+
+    * ``results``   – top-*n* dicts: spotify_id, name, artist, genre,
+                      album_art_url, similarity_pct
+    * ``cache_hit`` – True when the full result set was served from Redis
 
     Parameters
     ----------
@@ -207,53 +286,53 @@ def get_recommendations(
         6-D normalised feature vector:
         [tempo/250, energy, danceability, valence, acousticness, instrumentalness]
     n : int
-        Number of recommendations to return.
+        Number of recommendations to return (default 10).
     exclude_spotify_ids : list[str] | None
-        Spotify IDs to exclude (e.g. the seed track itself).
-
-    Returns
-    -------
-    list[dict] — each dict has:
-        spotify_id, name, artist, genre, album_art_url, similarity_pct
+        Track IDs to exclude from results.
     """
     exclude = set(exclude_spotify_ids or [])
 
-    # --- Redis cache (5-minute TTL per unique seed vector) ---
-    r = _get_redis()
-    cache_key = None
-    if r:
-        vec_hash = hashlib.md5(json.dumps(seed_vector, sort_keys=True).encode()).hexdigest()
-        cache_key = f"cadenza:recs:{vec_hash}:{n}"
-        cached = r.get(cache_key)
-        if cached:
-            return json.loads(cached)
+    # ── Cache key: SHA-256 of the vector + n (stable across runs) ──────────
+    vec_str = json.dumps(seed_vector, separators=(",", ":"))  # compact, deterministic
+    vec_hash = hashlib.sha256(vec_str.encode()).hexdigest()[:16]
 
-    # --- build corpus ---
+    # ── 1. Try Redis (1-hour TTL) ───────────────────────────────────────────
+    cached = cache.get_recommendations(vec_hash, n)
+    if cached is not None:
+        logger.debug("Recommendations cache HIT (key=%s:%d).", vec_hash, n)
+        return cached, True
+
+    logger.debug("Recommendations cache MISS — computing (key=%s:%d).", vec_hash, n)
+
+    # ── 2. Build corpus ─────────────────────────────────────────────────────
     tracks, matrix = _build_corpus()
     if not tracks:
         logger.warning("Track corpus is empty — run seed.py first.")
-        return []
+        return [], False
 
-    # --- cosine similarity ---
+    # ── 3. Cosine similarity ─────────────────────────────────────────────────
     seed = np.array(seed_vector, dtype=np.float32).reshape(1, -1)
-    sims = cosine_similarity(seed, matrix)[0]   # shape (N,)
+    sims = sk_cosine_sim(seed, matrix)[0]   # shape (N,)
 
-    # Sort descending, skip excluded IDs
     ranked = sorted(
-        ((tracks[i], float(sims[i])) for i in range(len(tracks)) if tracks[i].spotify_id not in exclude),
+        (
+            (tracks[i], float(sims[i]))
+            for i in range(len(tracks))
+            if tracks[i].spotify_id not in exclude
+        ),
         key=lambda x: x[1],
         reverse=True,
     )[:n]
 
-    # --- Spotify enrichment (graceful fallback) ---
+    # ── 4. Spotify enrichment (per-track 24-h cache, graceful fallback) ─────
     token = _get_cc_token()
     spotify_meta: dict[str, dict] = {}
     if token:
         ids = [t.spotify_id for t, _ in ranked]
         spotify_meta = _enrich_from_spotify(ids, token)
 
-    # --- assemble result ---
-    results = []
+    # ── 5. Assemble results ──────────────────────────────────────────────────
+    results: list[dict] = []
     for track, sim in ranked:
         meta = spotify_meta.get(track.spotify_id, {})
         results.append({
@@ -265,42 +344,47 @@ def get_recommendations(
             "similarity_pct": round(sim * 100, 1),
         })
 
-    # --- cache result ---
-    if r and cache_key:
-        r.set(cache_key, json.dumps(results), ex=300)   # 5-minute TTL
+    # ── 6. Write to Redis (1-hour TTL) ───────────────────────────────────────
+    cache.set_recommendations(vec_hash, n, results)
 
-    return results
+    return results, False
 
 
 def vector_from_top_tracks(top_tracks_payload: dict) -> list[float]:
     """
-    Derive a seed preference vector from a user's Spotify top-tracks payload.
+    Derive a 6-D seed preference vector from a Spotify top-tracks payload.
 
-    Because /v1/audio-features is deprecated, we map each track's popularity
-    into a rough energy proxy and derive the other dimensions from genre/name
-    heuristics stored in our DB.
-
-    If the user's top tracks appear in our Track corpus, we average their
-    feature vectors — otherwise we return a neutral default vector.
+    Strategy (in order):
+    1. If any of the user's top tracks are in our PostgreSQL corpus, average
+       their feature vectors.
+    2. Otherwise use Spotify popularity as an energy proxy and fill defaults.
     """
-    from api.models import Track
+    from api.models import Track   # local import
 
     if not top_tracks_payload or not top_tracks_payload.get("items"):
-        return [0.5, 0.5, 0.5, 0.5, 0.2, 0.1]   # neutral default
+        return [0.5, 0.5, 0.5, 0.5, 0.2, 0.1]
 
-    spotify_ids = [item["id"] for item in top_tracks_payload["items"] if "id" in item]
+    spotify_ids = [
+        item["id"] for item in top_tracks_payload["items"] if "id" in item
+    ]
     db_tracks = Track.query.filter(Track.spotify_id.in_(spotify_ids)).all()
 
     if db_tracks:
-        vectors = np.array([t.feature_vector() for t in db_tracks])
-        avg = vectors.mean(axis=0).tolist()
-        return avg
+        vectors = np.array([t.feature_vector() for t in db_tracks], dtype=np.float32)
+        return vectors.mean(axis=0).tolist()
 
-    # Fallback: use Spotify popularity to proxy energy
+    # Fallback: map popularity → rough energy proxy
     popularities = [
         item.get("popularity", 50) / 100.0
         for item in top_tracks_payload["items"]
         if "popularity" in item
     ]
     energy_proxy = float(np.mean(popularities)) if popularities else 0.5
-    return [energy_proxy * 0.9, energy_proxy, energy_proxy * 0.85, 0.5, 0.2, 0.05]
+    return [
+        round(energy_proxy * 0.90, 3),
+        round(energy_proxy, 3),
+        round(energy_proxy * 0.85, 3),
+        0.5,
+        0.2,
+        0.05,
+    ]

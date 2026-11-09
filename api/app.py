@@ -1,29 +1,34 @@
 """
 Cadenza — Hybrid Music Recommendation Engine
 =============================================
-Flask + PostgreSQL (SQLAlchemy) + Redis + Spotify API
+Flask + PostgreSQL (SQLAlchemy) + Redis (api/cache.py) + Spotify API
 
 Routes
 ------
-GET  /                   Landing page
-GET  /login              Redirect to Spotify OAuth
-GET  /callback           Exchange code → token; upsert user in PostgreSQL
-GET  /profile            Show user's top tracks / artists
-GET  /matches            Find users with similar taste (Jaccard similarity)
-GET  /recommendations    Track recommendations via cosine-similarity engine
-GET  /chat/<room_id>     Private room chat
+GET  /                       Landing page
+GET  /login                  Redirect to Spotify OAuth
+GET  /callback               Exchange code → token; upsert user in PostgreSQL
+GET  /profile                Show user's top tracks / artists
+GET  /matches                Find users with similar taste (Jaccard similarity)
+GET  /recommendations        Track recommendations page (HTML)
+GET  /api/recommendations    JSON recommendation endpoint
+         ?tempo=&energy=&danceability=&valence=&acousticness=&instrumentalness=&n=
+         Response headers: X-Cache (HIT|MISS), X-Response-Time-Ms
+GET  /health                 JSON health check for PostgreSQL + Redis
+GET  /chat/<room_id>         Private room chat (with persisted history)
+
 Socket.IO events: join | leave | message
 """
 
 from __future__ import annotations
 
 import os
+import time
 from urllib.parse import urlencode
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, redirect, render_template, request, session, url_for, jsonify
-from flask_caching import Cache
+from flask import Flask, make_response, redirect, render_template, request, session, url_for, jsonify
 from flask_socketio import SocketIO, join_room, leave_room, send
 from flask_sqlalchemy import SQLAlchemy
 
@@ -50,15 +55,8 @@ from api.models import db, User, Track, Message  # noqa: E402
 
 db.init_app(app)
 
-# ── Redis cache (Flask-Caching) ─────────────────────────────────────────────
-_redis_url = os.getenv("REDIS_URL")
-if _redis_url:
-    app.config["CACHE_TYPE"] = "RedisCache"
-    app.config["CACHE_REDIS_URL"] = _redis_url
-else:
-    app.config["CACHE_TYPE"] = "SimpleCache"   # in-process fallback for dev
-
-cache = Cache(app)
+# ── Redis cache (api/cache.py singleton) ────────────────────────────────────
+from api.cache import cache as redis_cache  # noqa: E402
 
 # ── Socket.IO ───────────────────────────────────────────────────────────────
 socketio = SocketIO(app, async_mode="eventlet")
@@ -68,9 +66,9 @@ client_id = os.getenv("SPOTIFY_CLIENT_ID")
 client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 redirect_uri = os.getenv("REDIRECT_URI", "http://localhost:5000/callback")
 
-# ── MongoDB (legacy, kept optional) ─────────────────────────────────────────
+# ── MongoDB (legacy, optional dual-write) ───────────────────────────────────
 _mongo_uri = os.getenv("MONGO_URI")
-users_collection = None   # Only populated if MONGO_URI is set
+users_collection = None
 if _mongo_uri:
     try:
         from pymongo import MongoClient
@@ -78,9 +76,9 @@ if _mongo_uri:
         _mongo_db = _mongo_client["cadenza_db"]
         users_collection = _mongo_db["users"]
         users_collection.create_index("spotify_id", unique=True)
-        print("✅  Connected to MongoDB (legacy mode)")
+        print("✅  Connected to MongoDB (legacy dual-write mode)")
     except Exception as exc:
-        print(f"⚠️   MongoDB unavailable — running PostgreSQL-only mode: {exc}")
+        print(f"⚠️   MongoDB unavailable — PostgreSQL-only mode: {exc}")
 
 
 # ---------------------------------------------------------------------------
@@ -92,21 +90,16 @@ with app.app_context():
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Private helpers
 # ---------------------------------------------------------------------------
-
-def _spotify_headers() -> dict:
-    token = session.get("access_token")
-    if not token:
-        return {}
-    return {"Authorization": f"Bearer {token}"}
-
 
 def _get_pg_user(spotify_id: str) -> User | None:
     return User.query.filter_by(spotify_id=spotify_id).first()
 
 
-def _upsert_pg_user(me: dict, top_tracks: dict, top_artists: dict, access_token: str) -> User:
+def _upsert_pg_user(
+    me: dict, top_tracks: dict, top_artists: dict, access_token: str
+) -> User:
     spotify_id = me["id"]
     user = User.query.filter_by(spotify_id=spotify_id).first()
     if not user:
@@ -133,8 +126,19 @@ def _calculate_similarity(user1: User, user2: User) -> float:
         return 0.0
 
 
+def _pg_health() -> dict:
+    """Return PostgreSQL connectivity status dict."""
+    try:
+        t0 = time.perf_counter()
+        db.session.execute(db.text("SELECT 1"))
+        latency_ms = round((time.perf_counter() - t0) * 1000, 2)
+        return {"status": "connected", "latency_ms": latency_ms}
+    except Exception as exc:
+        return {"status": "unavailable", "error": str(exc)}
+
+
 # ---------------------------------------------------------------------------
-# Pages
+# Routes — pages
 # ---------------------------------------------------------------------------
 
 @app.route("/")
@@ -160,7 +164,6 @@ def callback():
     if not code:
         return redirect(url_for("index"))
 
-    # Exchange code for token
     try:
         token_resp = requests.post(
             "https://accounts.spotify.com/api/token",
@@ -174,8 +177,7 @@ def callback():
             timeout=10,
         )
         token_resp.raise_for_status()
-        token_data = token_resp.json()
-        access_token = token_data["access_token"]
+        access_token = token_resp.json()["access_token"]
         session["access_token"] = access_token
     except Exception as exc:
         app.logger.error("Token exchange error: %s", exc)
@@ -195,10 +197,8 @@ def callback():
         session["spotify_id"] = spotify_id
         session["display_name"] = me.get("display_name") or spotify_id
 
-        # Persist to PostgreSQL (primary)
         _upsert_pg_user(me, top_tracks, top_artists, access_token)
 
-        # Mirror to MongoDB if configured
         if users_collection is not None:
             users_collection.update_one(
                 {"spotify_id": spotify_id},
@@ -212,7 +212,6 @@ def callback():
                 }},
                 upsert=True,
             )
-
     except Exception as exc:
         app.logger.error("Spotify profile error: %s", exc)
         return "Error fetching user data from Spotify", 500
@@ -273,12 +272,9 @@ def get_matches():
 
 
 @app.route("/recommendations")
-@cache.cached(timeout=300, key_prefix=lambda: f"recs_{session.get('spotify_id', 'anon')}")
 def recommendations():
     """
-    Hybrid recommendation page.
-    Derives a preference vector from the user's top tracks → cosine similarity
-    against the PostgreSQL Track corpus.
+    HTML recommendation page — derives preference vector from top tracks.
     """
     spotify_id = session.get("spotify_id")
     if not spotify_id:
@@ -291,7 +287,7 @@ def recommendations():
     from api.recommender import get_recommendations, vector_from_top_tracks
 
     seed_vec = vector_from_top_tracks(user.top_tracks or {})
-    recs = get_recommendations(seed_vector=seed_vec, n=12)
+    recs, _ = get_recommendations(seed_vector=seed_vec, n=12)
 
     return render_template(
         "recommendations.html",
@@ -300,16 +296,34 @@ def recommendations():
     )
 
 
+# ---------------------------------------------------------------------------
+# Routes — JSON API
+# ---------------------------------------------------------------------------
+
 @app.route("/api/recommendations")
 def api_recommendations():
     """
-    JSON endpoint for the recommendation engine.
-    Accepts optional query params: tempo, energy, danceability, valence,
-    acousticness, instrumentalness (all 0–1; tempo is raw BPM ÷ 250).
-    """
-    spotify_id = session.get("spotify_id")
+    JSON recommendation endpoint.
 
-    # Build vector from query params or user profile
+    Query parameters (all optional — authenticated users get profile-derived vector)
+    ---------------------------------------------------------------------------------
+    tempo            float [0–1]   raw BPM ÷ 250
+    energy           float [0–1]
+    danceability     float [0–1]
+    valence          float [0–1]
+    acousticness     float [0–1]
+    instrumentalness float [0–1]
+    n                int           number of results (default 10, max 50)
+
+    Response headers
+    ----------------
+    X-Cache             HIT | MISS
+    X-Response-Time-Ms  wall-clock time in milliseconds (float)
+    """
+    t_start = time.perf_counter()
+
+    # ── Build seed vector ──────────────────────────────────────────────────
+    spotify_id = session.get("spotify_id")
     try:
         vec = [
             float(request.args.get("tempo", 0.5)),
@@ -320,17 +334,70 @@ def api_recommendations():
             float(request.args.get("instrumentalness", 0.1)),
         ]
     except ValueError:
-        return jsonify({"error": "Invalid vector parameters"}), 400
+        return jsonify({"error": "Invalid vector parameter — must be numeric [0–1]."}), 400
 
+    # Authenticated users get vector derived from their Spotify profile
     if spotify_id:
         user = _get_pg_user(spotify_id)
         if user:
             from api.recommender import vector_from_top_tracks
             vec = vector_from_top_tracks(user.top_tracks or {})
 
+    # Clamp n to [1, 50]
+    try:
+        n = max(1, min(50, int(request.args.get("n", 10))))
+    except ValueError:
+        n = 10
+
+    # ── Run recommendation engine ──────────────────────────────────────────
     from api.recommender import get_recommendations
-    recs = get_recommendations(seed_vector=vec, n=int(request.args.get("n", 10)))
-    return jsonify(recs)
+    results, cache_hit = get_recommendations(seed_vector=vec, n=n)
+
+    # ── Build response with diagnostic headers ─────────────────────────────
+    elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
+
+    resp = make_response(jsonify(results))
+    resp.headers["X-Cache"] = "HIT" if cache_hit else "MISS"
+    resp.headers["X-Response-Time-Ms"] = str(elapsed_ms)
+    resp.headers["Cache-Control"] = "no-store"   # don't let CDNs cache personalised results
+    return resp
+
+
+@app.route("/health")
+def health():
+    """
+    Health check endpoint.
+
+    Returns 200 when both PostgreSQL and Redis (if configured) are reachable,
+    503 otherwise.
+
+    Example response (all healthy):
+        {
+            "status": "healthy",
+            "postgres": {"status": "connected", "latency_ms": 1.4},
+            "redis":    {"status": "connected", "latency_ms": 0.9}
+        }
+
+    Example response (Redis not configured):
+        {
+            "status": "healthy",
+            "postgres": {"status": "connected", "latency_ms": 1.4},
+            "redis":    {"status": "not_configured"}
+        }
+    """
+    pg_status = _pg_health()
+    redis_status = redis_cache.health_check()
+
+    # Overall health: unhealthy only if PostgreSQL (the critical service) is down
+    overall = "healthy" if pg_status["status"] == "connected" else "unhealthy"
+    http_status = 200 if overall == "healthy" else 503
+
+    payload = {
+        "status": overall,
+        "postgres": pg_status,
+        "redis": redis_status,
+    }
+    return jsonify(payload), http_status
 
 
 @app.route("/chat/<room_id>")
@@ -347,7 +414,6 @@ def chat(room_id: str):
     other_user = _get_pg_user(other_id) if other_id else None
     other_name = (other_user.display_name or other_id) if other_user else other_id
 
-    # Load last 50 messages from DB
     history = (
         Message.query.filter_by(room_id=room_id)
         .order_by(Message.sent_at.asc())
@@ -390,7 +456,6 @@ def handle_message(data):
     sender_id = data.get("sender_id", "")
 
     if room and msg:
-        # Persist to PostgreSQL
         try:
             m = Message(
                 room_id=room,
