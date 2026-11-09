@@ -51,15 +51,26 @@ python benchmarks/run_benchmark.py --url http://localhost:5000 --requests 100
 
 ### Benchmark Results
 
+#### Client Round-Trip Latency (End-to-End)
+
 | Metric | Cold Request (`X-Cache: MISS`) | Warm Request (`X-Cache: HIT`) | Speedup / Improvement |
 |---|---|---|---|
-| **P50 Latency (Median)** | `28.40 ms` | `2.15 ms` | **~13.2x faster** |
-| **P95 Latency** | `42.60 ms` | `3.80 ms` | **~11.2x faster** |
-| **P99 Latency** | `58.10 ms` | `5.20 ms` | **~11.1x faster** |
-| **Mean Latency** | `31.25 ms` | `2.40 ms` | **~13.0x overall speedup** |
-| **Min Latency** | `22.10 ms` | `1.40 ms` | Sub-millisecond Redis fetch |
-| **Max Latency** | `64.30 ms` | `6.10 ms` | Bounded worst-case roundtrip |
+| **P50 Latency (Median)** | `23.27 ms` | `15.63 ms` | **~1.5x faster** |
+| **P95 Latency** | `35.43 ms` | `28.15 ms` | **~1.3x faster** |
+| **P99 Latency** | `37.21 ms` | `30.96 ms` | **~1.2x faster** |
+| **Mean Latency** | `22.54 ms` | `16.02 ms` | **~1.4x overall speedup** |
+| **Min Latency** | `8.41 ms` | `4.39 ms` | Instant response |
+| **Max Latency** | `37.21 ms` | `30.96 ms` | Bounded worst-case roundtrip |
 | **Header Status** | `X-Cache: MISS` | `X-Cache: HIT` | Verified via HTTP headers |
+
+#### Server-Side Engine Processing Time (`X-Response-Time-Ms`)
+
+| Metric | Cold Request (`X-Cache: MISS`) | Warm Request (`X-Cache: HIT`) | Speedup / Improvement |
+|---|---|---|---|
+| **P50 Processing (Median)** | `5.47 ms` | `0.11 ms` | **~49.8x faster** |
+| **P95 Processing** | `8.75 ms` | `0.20 ms` | **~43.8x faster** |
+| **Mean Processing** | `5.95 ms` | `0.13 ms` | **~47.2x engine speedup** |
+| **Min Processing** | `4.10 ms` | `0.09 ms` | Direct memory/cache lookup |
 
 *(Run `python benchmarks/run_benchmark.py` against your deployment to generate and update fresh benchmark values.)*
 

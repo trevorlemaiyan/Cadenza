@@ -69,9 +69,10 @@ from api.cache import cache
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# In-process fallback for Spotify CC token (used when Redis is absent)
+# In-process fallback caches (used when Redis is absent)
 # ---------------------------------------------------------------------------
 _cc_token_cache: dict = {}
+_recs_fallback_cache: dict = {}
 
 
 # ---------------------------------------------------------------------------
@@ -296,11 +297,16 @@ def get_recommendations(
     vec_str = json.dumps(seed_vector, separators=(",", ":"))  # compact, deterministic
     vec_hash = hashlib.sha256(vec_str.encode()).hexdigest()[:16]
 
-    # ── 1. Try Redis (1-hour TTL) ───────────────────────────────────────────
+    # ── 1. Try Redis (1-hour TTL) or in-process fallback ─────────────────────
     cached = cache.get_recommendations(vec_hash, n)
     if cached is not None:
         logger.debug("Recommendations cache HIT (key=%s:%d).", vec_hash, n)
         return cached, True
+
+    fb_entry = _recs_fallback_cache.get((vec_hash, n))
+    if fb_entry and fb_entry.get("exp", 0) > time.time():
+        logger.debug("Recommendations in-process cache HIT (key=%s:%d).", vec_hash, n)
+        return fb_entry["results"], True
 
     logger.debug("Recommendations cache MISS — computing (key=%s:%d).", vec_hash, n)
 
@@ -344,8 +350,12 @@ def get_recommendations(
             "similarity_pct": round(sim * 100, 1),
         })
 
-    # ── 6. Write to Redis (1-hour TTL) ───────────────────────────────────────
+    # ── 6. Write to Redis (1-hour TTL) and in-process fallback ──────────────
     cache.set_recommendations(vec_hash, n, results)
+    _recs_fallback_cache[(vec_hash, n)] = {
+        "results": results,
+        "exp": time.time() + 3600,
+    }
 
     return results, False
 

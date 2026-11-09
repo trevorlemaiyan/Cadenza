@@ -76,9 +76,9 @@ if _mongo_uri:
         _mongo_db = _mongo_client["cadenza_db"]
         users_collection = _mongo_db["users"]
         users_collection.create_index("spotify_id", unique=True)
-        print("✅  Connected to MongoDB (legacy dual-write mode)")
+        print("[OK] Connected to MongoDB (legacy dual-write mode)")
     except Exception as exc:
-        print(f"⚠️   MongoDB unavailable — PostgreSQL-only mode: {exc}")
+        print(f"[WARN] MongoDB unavailable — PostgreSQL-only mode: {exc}")
 
 
 # ---------------------------------------------------------------------------

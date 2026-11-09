@@ -339,7 +339,7 @@ def seed_from_list(tracks_data: list[tuple]) -> None:
             added += 1
 
     db.session.commit()
-    print(f"✅  Seeded: {added} added, {updated} updated.")
+    print(f"[OK] Seeded: {added} added, {updated} updated.")
 
 
 def seed_from_csv(path: str) -> None:
@@ -356,7 +356,7 @@ def seed_from_csv(path: str) -> None:
         reader = csv.DictReader(f)
         missing = required - set(reader.fieldnames or [])
         if missing:
-            print(f"❌  CSV missing columns: {missing}")
+            print(f"[ERROR] CSV missing columns: {missing}")
             sys.exit(1)
 
         for row in reader:
@@ -382,7 +382,7 @@ def seed_from_csv(path: str) -> None:
             target.album_art_url = row.get("album_art_url") or None
 
     db.session.commit()
-    print(f"✅  CSV Seeded: {added} added, {updated} updated.")
+    print(f"[OK] CSV Seeded: {added} added, {updated} updated.")
 
 
 # ---------------------------------------------------------------------------
@@ -400,11 +400,11 @@ if __name__ == "__main__":
 
     with app.app_context():
         db.create_all()
-        print(f"📦  Tables created/verified.")
+        print("[OK] Tables created/verified.")
 
         if args.csv:
-            print(f"📂  Loading from CSV: {args.csv}")
+            print(f"[INFO] Loading from CSV: {args.csv}")
             seed_from_csv(args.csv)
         else:
-            print(f"🌱  Seeding {len(SEED_TRACKS)} built-in tracks…")
+            print(f"[INFO] Seeding {len(SEED_TRACKS)} built-in tracks...")
             seed_from_list(SEED_TRACKS)
